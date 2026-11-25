@@ -1,0 +1,2 @@
+-r requirements.txt
+pdf2zh-next==2.10.2
