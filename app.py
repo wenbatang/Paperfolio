@@ -13,7 +13,8 @@ from icons import Icons
 from workspace import Workspace
 from translation_window import TranslationWindow
 from study_window import StudyWindow
-from settings import THEMES, Preferences, bookplate, open_book
+from ornaments import DENSITIES, PAPER_COLORS, STYLES, MotifStrip, mix, preference
+from settings import Preferences
 
 HERE = Path(__file__).resolve().parent
 PAPER, INK, MUTED, PINE = "#f7f8f4", "#233c34", "#63746b", "#174b3e"
@@ -65,6 +66,9 @@ class App(tk.Tk):
         self.geometry("1220x760")
         self.minsize(950, 610)
         self.library = Library(root_dir or HERE / "data")
+        self.ornament_style = preference(self.library)
+        self.palette = STYLES[self.ornament_style]
+        self.density = self.library.preference("ornament_density", DENSITIES[0])
         self.view, self.pid = "all", None
         self.selected_ids = ()
         self.detail_index = 0
@@ -87,10 +91,16 @@ class App(tk.Tk):
         head = ttk.Frame(main)
         head.pack(fill="x", pady=(0, 15))
         head.columnconfigure(0, weight=1)
-        self.heading = ttk.Label(head, style="Title.TLabel")
-        self.heading.grid(row=0, column=0, sticky="w")
-        self.counter = ttk.Label(head, style="Muted.TLabel")
-        self.counter.grid(row=1, column=0, sticky="w")
+        title_area = ttk.Frame(head)
+        title_area.grid(row=0, column=0, rowspan=2, sticky="nsew")
+        labels = ttk.Frame(title_area)
+        labels.pack(side="left")
+        self.heading = ttk.Label(labels, style="Title.TLabel")
+        self.heading.pack(anchor="w")
+        self.counter = ttk.Label(labels, style="Muted.TLabel")
+        self.counter.pack(anchor="w")
+        self.title_motifs = MotifStrip(title_area, offset=3)
+        self.title_motifs.pack(side="left", fill="both", expand=True)
         ttk.Button(head, text="导入 PDF", image=self.icons.get("import","white"), compound="left",
                    style="Accent.TButton", command=self.import_files).grid(row=0, column=3, rowspan=2)
         self.multi_button = ttk.Checkbutton(head, text="多选", variable=self.multi, style="Select.Toolbutton",
@@ -132,7 +142,6 @@ class App(tk.Tk):
         self.table.configure(yscrollcommand=sy.set)
         sy.pack(side="right", fill="y")
         self.table.pack(side="left", fill="both", expand=True)
-        self.apply_theme()
         self.table.bind("<<TreeviewSelect>>", self.select)
         self.table.bind("<Button-1>", self.click_row)
         self.table.bind("<B1-Motion>", self.paper_actions.drag_motion)
@@ -145,7 +154,6 @@ class App(tk.Tk):
         self.table.bind("<Escape>", self.clear_selection)
         self.table.bind("<Delete>", lambda _: self.paper_actions.trash_shortcut())
         self.empty = tk.Frame(self.table_zone, bg="white")
-        open_book(self.empty).pack()
         self.empty_title = tk.Label(self.empty, font=(FONT, 15, "bold"), bg="white", fg=INK)
         self.empty_title.pack(pady=8)
         self.empty_action = ttk.Button(self.empty, text="导入第一篇 PDF", command=self.import_files)
@@ -156,6 +164,7 @@ class App(tk.Tk):
         self.query.trace_add("write", lambda *_: self.refresh())
         self.workspace.bind_keys()
         self.protocol("WM_DELETE_WINDOW", self.close)
+        self.apply_theme()
         self.refresh()
 
     def setup_style(self):
@@ -241,8 +250,12 @@ class App(tk.Tk):
             activebackground=PINE,
             activeforeground="white",
         ).pack(side="right")
+        self.collection_space = tk.Frame(self.side, bg=SIDEBAR)
+        self.collection_space.pack(fill="both", expand=True, padx=10, pady=4)
+        self.collection_space.rowconfigure(0, weight=1)
+        self.collection_space.columnconfigure(0, weight=1)
         self.collections = tk.Listbox(
-            self.side,
+            self.collection_space, height=1,
             bg=SIDEBAR,
             fg=SIDE_TEXT,
             bd=0,
@@ -253,24 +266,71 @@ class App(tk.Tk):
             exportselection=False,
             font=(FONT, 11),
         )
-        self.collections.pack(fill="both", expand=True, padx=18, pady=4)
+        self.collections.grid(row=0, column=0, sticky="nsew", padx=8)
         self.collections.bind("<<ListboxSelect>>", self.select_collection)
+        self.side_motifs = MotifStrip(self.collection_space, dark=True, offset=2, cluster=True)
+        self.side_motifs.grid(row=1, column=0, sticky="ew")
+        self.collection_space.bind("<Configure>", self.fit_side_motifs)
         settings = self.side_button(self.side, "  设置", self.preferences)
         settings.configure(image=self.icons.get("settings", "#d5eadd"), compound="left")
-        settings.pack_configure(side="bottom", before=self.collections, pady=(2, 8))
-        bookplate(self.side).pack(side="bottom", before=self.collections, pady=(0, 5))
+        settings.pack_configure(side="bottom", before=self.collection_space, pady=(2, 8))
         self.reload_collections()
 
     def apply_theme(self):
-        name = self.library.preference("theme", "纸白")
-        background, stripe = THEMES.get(name, THEMES["纸白"])
+        self.ornament_style = preference(self.library)
+        self.palette = group = STYLES[self.ornament_style]
+        self.density = self.library.preference("ornament_density", DENSITIES[0])
+        name = self.library.preference("theme", "随风格")
+        background, stripe = PAPER_COLORS.get(name, (group.paper, mix(group.tint, "white", .45)))
         self.paper_color = background
         style = ttk.Style(self)
         for key in (".", "TNotebook", "Quiet.TButton"):
             style.configure(key, background=background)
-        style.map("Workspace.TNotebook.Tab", background=[("selected", background), ("active", "#ebf1ed")])
         style.map("TNotebook.Tab", background=[("selected", background)])
         self.table.tag_configure("alt", background=stripe)
+        style.configure("Accent.TButton", background=group.accent, bordercolor=group.accent,
+                        lightcolor=group.accent, darkcolor=group.accent)
+        style.map("Accent.TButton", background=[("disabled", "#79827b"), ("active", group.rail)])
+        style.configure("Treeview.Heading", background=group.tint, lightcolor=group.tint,
+                        darkcolor=group.tint, bordercolor=group.tint, foreground=group.rail)
+        style.map("Treeview", background=[("selected", mix(group.tint, group.accent, .16))],
+                  foreground=[("selected", group.rail)])
+        style.configure("Workspace.TNotebook", background=group.tint)
+        style.configure("Workspace.TNotebook.Tab", background=group.tint)
+        style.map("Workspace.TNotebook.Tab", background=[("selected", background), ("active", group.tint)],
+                  foreground=[("selected", group.rail)])
+        style.map("Inspector.TNotebook.Tab", background=[("selected", group.tint), ("active", background)],
+                  foreground=[("selected", group.rail)])
+        self.side.configure(bg=group.rail)
+        for child in self.side.winfo_children():
+            child.configure(bg=group.rail)
+            if isinstance(child, tk.Button):
+                child.configure(activebackground=self.nav_active)
+            elif isinstance(child, tk.Frame):
+                for item in child.winfo_children():
+                    item.configure(bg=group.rail)
+        self.collections.configure(selectbackground=self.nav_active)
+        for key, btn in self.nav_buttons.items():
+            btn.configure(bg=self.nav_active if key == self.view else group.rail)
+        self.title_motifs.theme(self.ornament_style, self.density, background)
+        self.side_motifs.theme(self.ornament_style, self.density, group.rail)
+        self.workspace.recolor(group)
+        self.fit_side_motifs()
+
+    @property
+    def nav_active(self):
+        return mix(self.palette.rail, "white", .18)
+
+    def fit_side_motifs(self, _=None):
+        # The list gets its full height as soon as its rows need the space.
+        bounds = self.collections.bbox(0) if self.collections.size() else None
+        line = bounds[3] if bounds else font.Font(font=self.collections.cget("font")).metrics("linespace")
+        spare = self.collection_space.winfo_height() - (line + 2)*self.collections.size() - 10
+        if self.density == "关闭" or spare < 42:
+            self.side_motifs.grid_remove()
+        else:
+            self.side_motifs.configure(height=min(spare, 112))
+            self.side_motifs.grid()
 
     def preferences(self):
         if Preferences(self).result:
@@ -303,6 +363,7 @@ class App(tk.Tk):
         self.collections.delete(0, "end")
         for g in self.groups:
             self.collections.insert("end", g["name"])
+        self.fit_side_motifs()
 
     def new_collection(self):
         name = simpledialog.askstring("新建分类", "分类名称", parent=self)
@@ -356,7 +417,7 @@ class App(tk.Tk):
         names.update({g["id"]: g["name"] for g in self.groups})
         self.heading.configure(text=names[self.view])
         for k, button in self.nav_buttons.items():
-            button.configure(bg="#365e50" if k == self.view else SIDEBAR)
+            button.configure(bg=self.nav_active if k == self.view else self.palette.rail)
         self.collections.selection_clear(0, "end")
         for i, g in enumerate(self.groups):
             if g["id"] == self.view:
@@ -511,6 +572,7 @@ class App(tk.Tk):
             ttk.Label(frame, text="选择文献后可查看附件和笔记。", style="Muted.TLabel").pack(
                 anchor="w", pady=9
             )
+            self.detail_motifs(frame)
             return
         r = self.rows[self.pid]
         ttk.Label(frame, text=r["title"], style="Section.TLabel", wraplength=280).pack(
@@ -522,8 +584,8 @@ class App(tk.Tk):
         actions = ttk.Frame(frame)
         actions.pack(fill="x", pady=12)
         ttk.Button(actions, text="阅读", image=self.icons.get("book","white"), compound="left",
-                   style="Accent.TButton", command=self.open_reader).pack(side="left")
-        ttk.Button(actions, text="翻译原文", command=lambda: self.translate(r)).pack(side="left", padx=6)
+                   style="Accent.TButton", width=5, command=self.open_reader).pack(side="left")
+        ttk.Button(actions, text="翻译原文", width=8, command=lambda: self.translate(r)).pack(side="left", padx=6)
         ttk.Button(
             actions,
             text="★" if r["favorite"] else "☆",
@@ -559,6 +621,7 @@ class App(tk.Tk):
         ttk.Button(tools, text="编辑信息与分类", command=self.edit).grid(
             row=0, column=1, sticky="ew", pady=2
         )
+        self.detail_motifs(info)
         items = self.library.notes(self.pid)
         nlist = self.item_list(notes, items, lambda n: f"p. {n['page']}   {n['body'].splitlines()[0]}")
         preview = tk.Text(
@@ -630,6 +693,13 @@ class App(tk.Tk):
         note_actions.pack(side="bottom", before=nlist, fill="x", pady=3)
         ttk.Button(note_actions, text="回到笔记所在页", command=jump).pack(side="left")
         ttk.Button(note_actions, text="删除所选笔记", command=delete_note).pack(side="right")
+
+    def detail_motifs(self, parent):
+        if self.density == "关闭":
+            return
+        strip = MotifStrip(parent, offset=4, cluster=True)
+        strip.theme(self.ornament_style, self.density, self.paper_color)
+        strip.pack(fill="both", expand=True)  # Last in the pack order; uses leftover space only.
 
     def item_list(self, parent, items, label):
         box = tk.Listbox(

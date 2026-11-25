@@ -7,6 +7,7 @@ from tkinter import font, messagebox, ttk
 
 from reader import Reader
 from library import PaperEdit
+from ornaments import MotifStrip, mix
 
 
 class Workspace(ttk.Frame):
@@ -15,7 +16,7 @@ class Workspace(ttk.Frame):
         self.app = app
         self.closed = deque(maxlen=20)
         icon = app.icons.get
-        header = tk.Frame(self, bg="#183d37", padx=15, pady=6)
+        header = self.header = tk.Frame(self, bg="#183d37", padx=15, pady=6)
         header.pack(fill="x")
         tk.Label(header, text="  Paperfolio", image=icon("brand", size=27), compound="left",
                  bg="#183d37", fg="#fbfcf7", font=("Georgia", 16, "bold")).pack(side="left")
@@ -37,6 +38,8 @@ class Workspace(ttk.Frame):
                                style="Header.TButton", command=self.step)
         for button in (self.redo,self.undo):
             button.pack(side="right", padx=2)
+        self.header_motifs = MotifStrip(header, dark=True, offset=0)
+        self.header_motifs.pack(side="left", fill="both", expand=True)
         self.tabs = ttk.Notebook(self, style="Workspace.TNotebook")
         self.tabs.pack(fill="both", expand=True)
         self.catalog = ttk.Frame(self.tabs)
@@ -47,6 +50,20 @@ class Workspace(ttk.Frame):
         self.tab_menu = tk.Menu(self.tabs, tearoff=False)
         self.tabs.bind("<Button-3>", self.tab_context)
         self.refresh_history()
+
+    def recolor(self, palette):
+        self.header_motifs.theme(self.app.ornament_style, self.app.density, palette.rail)
+        self.header.configure(bg=palette.rail)
+        for child in self.header.winfo_children():
+            if isinstance(child, tk.Label):
+                child.configure(bg=palette.rail)
+        style = ttk.Style(self)
+        for key in ("Header.TButton", "Header.TMenubutton"):
+            tone = mix(palette.rail, "white", .09)
+            style.configure(key, background=tone, lightcolor=tone, darkcolor=tone)
+            style.map(key, background=[("disabled", palette.rail), ("active", palette.accent)])
+        for reader in self.readers():
+            reader.canvas.configure(bg=palette.tint)
 
     def current(self):
         selected = self.tabs.select()

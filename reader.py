@@ -90,7 +90,7 @@ class Reader(ttk.Frame):
         area = ttk.Frame(self.body)
         self.page_area = area
         area.pack(fill="both", expand=True)
-        self.canvas = tk.Canvas(area, bg="#dce3df", highlightthickness=0, cursor="xterm")
+        self.canvas = tk.Canvas(area, bg=app.palette.tint, highlightthickness=0, cursor="xterm")
         sy = ttk.Scrollbar(area, command=self.canvas.yview)
         sx = ttk.Scrollbar(area, orient="horizontal", command=self.canvas.xview)
         self.scrollbar = sy

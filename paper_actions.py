@@ -52,11 +52,11 @@ class PaperActions:
         index = target[2]
         if index is None:
             btn = self.app.nav_buttons["unfiled"]
-            bg = "#365e50" if self.app.view == "unfiled" else self.app.side.cget("bg")
-            btn.configure(bg="#417557" if active else bg)
+            bg = self.app.nav_active if self.app.view == "unfiled" else self.app.side.cget("bg")
+            btn.configure(bg=self.app.palette.accent if active else bg)
         else:
             box = self.app.collections
-            bg = "#417557" if active else box.cget("bg")
+            bg = self.app.palette.accent if active else box.cget("bg")
             box.itemconfigure(index, background=bg, selectbackground=bg if active else box.cget("selectbackground"))
 
     def drag_motion(self, event):
