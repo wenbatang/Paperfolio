@@ -209,7 +209,7 @@ def make_guide(library, paper, model=""):
     if not library.has_file(original):
         raise ValueError("找不到原文 PDF，请重新导入原文。")
     report("正在检测本机 Ollama 和可用模型")
-    model = resolve_model(model, installed_models())
+    model = resolve_model(model or library.preference("ollama_model"), installed_models(), fallback=not model)
     report("提取正文和证据片段")
     candidates = evidence(library.root / original["path"])
     sections = {}

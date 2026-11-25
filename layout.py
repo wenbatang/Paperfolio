@@ -1,6 +1,7 @@
 """PDF2Zh layout pipeline with native Ollama generation and progress events."""
 
 import ast
+import json
 import os
 import re
 import sys
@@ -14,8 +15,8 @@ from babeldoc.assets.assets import get_doclayout_onnx_model_path
 from babeldoc.docvision.doclayout import OnnxModel
 import onnxruntime
 
-from translate import LANGUAGES, generate, report
-from cloud_translate import KEYS, cloud_text
+from translate import IncompleteGeneration, LANGUAGES, generate, report
+from cloud_translate import KEYS, TOKEN, cloud_text
 
 
 class CompactLayoutModel(OnnxModel):
@@ -44,6 +45,10 @@ class LocalTranslator(BaseTranslator):
         super().__init__(source, target, ignore_cache=False)
         self.model = model
         self.error = None
+        self.untranslated = 0
+        self.completed = 0
+        self.cancel = None
+        self.lock = threading.Lock()
         self.prompt = (
             f"Translate from {LANGUAGES[source]} into {LANGUAGES[target]}. "
             "Output only the translated text. Preserve citations, numbers and placeholders "
@@ -57,30 +62,88 @@ class LocalTranslator(BaseTranslator):
         # text blocks. Local models receive bounded blocks with inline placeholders.
         raise NotImplementedError
 
+    def translate(self, text, ignore_cache=False, rate_limit_params=None):
+        # Returning a fallback outside BaseTranslator keeps it out of the success cache.
+        if self.error or not self.has_words(text):
+            return text
+        try:
+            result = super().translate(text, ignore_cache, rate_limit_params)
+        except IncompleteGeneration as exc:
+            with self.lock:
+                self.untranslated += 1
+                count = self.untranslated
+            report(None, detail=f"重试后仍未完成：{exc}。此块保留原文。", untranslated=count)
+            return text
+        except (OSError, ValueError) as exc:
+            with self.lock:
+                if not self.error:
+                    self.error = f"本机 Ollama 翻译中断：{exc}"
+                    if self.cancel:
+                        self.cancel()
+            return text
+        with self.lock:
+            self.completed += 1
+        return result
+
+    @staticmethod
+    def has_words(text):
+        return any(c.isalpha() for c in TOKEN.sub("", text))
+
+    @staticmethod
+    def cut(text, limit):
+        # Prefer a boundary near the limit. Keep BabelDOC formula/style tokens whole.
+        start = limit // 2
+        boundaries = list(re.finditer(r"[。！？\n]|[.!?]\s+|\s+", text[start:limit]))
+        cut = start + boundaries[-1].end() if boundaries else limit
+        for token in TOKEN.finditer(text):
+            if token.start() < cut < token.end():
+                return token.start() or token.end()
+        return cut
+
+    def ask(self, text, *, structured=False):
+        if not self.has_words(text):
+            return text
+        prompt = self.prompt
+        schema = None
+        if structured:
+            prompt = prompt.replace("Output only the translated text.",
+                                    "Put the complete translation in the JSON field named translation.")
+            schema = {"type": "object", "properties": {"translation": {"type": "string"}},
+                      "required": ["translation"]}
+        answer = generate(
+            self.model,
+            [{"role": "system", "content": prompt}, {"role": "user", "content": text}],
+            lambda n: report(None, detail=f"本段已生成 {n} 字符"),
+            response_format=schema,
+            max_tokens=min(3072, max(256, len(text) * 3 + 96)),
+        )
+        if structured:
+            try:
+                answer = json.loads(answer)["translation"]
+            except (ValueError, KeyError, TypeError) as exc:
+                raise IncompleteGeneration("重试回复格式无效") from exc
+            if not isinstance(answer, str) or not answer.strip():
+                raise IncompleteGeneration("重试后译文为空")
+        return answer.strip()
+
+    def translate_part(self, text):
+        try:
+            return self.ask(text)
+        except IncompleteGeneration as exc:
+            report(None, detail=f"{exc}，正在单独重试这段文字")
+        if len(text) > 220:
+            cut = self.cut(text, len(text) // 2)
+            return " ".join(self.ask(part, structured=True) for part in (text[:cut], text[cut:]))
+        return self.ask(text, structured=True)
+
     def do_translate(self, text, rate_limit_params=None):
         if self.error:
             raise ValueError(self.error)
         result = []
         while text:
-            cut = len(text)
-            if cut > 1800:
-                breaks = list(re.finditer(r"[。！？\n]|[.!?]\s+|\s+", text[:1800]))
-                cut = breaks[-1].end() if breaks else 1800
-            part, text = text[:cut], text[cut:]
-            if not part.strip():
-                result.append(part)
-                continue
-            try:
-                result.append(
-                    generate(
-                        self.model,
-                        [{"role": "system", "content": self.prompt}, {"role": "user", "content": part}],
-                        lambda n: report(None, detail=f"本段已生成 {n} 字符"),
-                    )
-                )
-            except (ValueError, OSError) as error:
-                self.error = f"本机模型未完成当前段落：{error}"
-                raise ValueError(self.error) from error
+            cut = self.cut(text, 1800) if len(text) > 1800 else len(text)
+            result.append(self.translate_part(text[:cut]))
+            text = text[cut:]
         return " ".join(result)
 
 
@@ -169,6 +232,8 @@ async def translate_layout(args, model):
             pool_max_workers=1,
             watermark_output_mode=WatermarkOutputMode.NoWatermark,
         )
+        if isinstance(local, LocalTranslator):
+            local.cancel = config.cancel_translation
         events = async_translate(config)
     finished = False
     async for event in events:
@@ -187,3 +252,8 @@ async def translate_layout(args, model):
             break
     if not finished:
         raise RuntimeError("排版引擎在完成前退出")
+    if isinstance(local, LocalTranslator) and local.untranslated:
+        if not local.completed:
+            raise RuntimeError("本次需要翻译的文字均未取得完整译文，请检查模型后重试")
+        report("排版完成", 100, f"{local.untranslated} 个文本块保留了原文，可重试补译",
+               untranslated=local.untranslated)

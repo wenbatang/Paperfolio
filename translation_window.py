@@ -69,6 +69,8 @@ class TranslationWindow(tk.Toplevel):
         models_row = ttk.Frame(self.form)
         self.model_entry = ttk.Combobox(models_row, textvariable=self.model, state="readonly")
         self.model_entry.pack(side="left", fill="x", expand=True)
+        self.model_entry.bind("<<ComboboxSelected>>", lambda _: app.library.save_preferences(
+            {"ollama_model": self.model.get()}))
         self.refresh_models = ttk.Button(models_row, text="重新检测", command=self.detect_models)
         self.refresh_models.pack(side="right")
         row("本机模型", models_row, 2)
@@ -152,9 +154,9 @@ class TranslationWindow(tk.Toplevel):
             self.after(100, self.finish_detection)
             return
         self.detecting, self.models = False, names
-        old = self.model.get()
+        old = self.app.library.preference("ollama_model")
         self.model_entry.configure(values=names)
-        self.model.set(resolve_model(old if old in names else "", names) if names else "")
+        self.model.set(resolve_model(old, names, fallback=True) if names else "")
         if not self.proc:
             self.configure_fields()
 
@@ -274,7 +276,10 @@ class TranslationWindow(tk.Toplevel):
                 argv += ["--config", self.config.get()]
             elif mode == "paragraph":
                 argv += ["--cache", str(self.app.library.root / "paragraph-cache.sqlite3")]
-            self.description = f"{self.dst.get()} · {spec or '全文'} · {'排版' if mode == 'layout' else '段落'} · {timestamp()}"
+            self.description = f"{self.dst.get()} · {spec or '全文'} · {'排版' if mode == 'layout' else '段落'}"
+            if provider == "ollama":
+                self.description += " · " + self.model.get()
+            self.translation_time = timestamp()
             self.app.library.save_preferences({"provider": provider})
             self.proc = subprocess.Popen(
                 argv,
@@ -294,6 +299,8 @@ class TranslationWindow(tk.Toplevel):
         self.phase = "正在启动翻译"
         self.detail = ""
         self.last_logged = ""
+        self.untranslated = 0
+        self.worker_error = ""
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
@@ -325,6 +332,8 @@ class TranslationWindow(tk.Toplevel):
                 code = item
                 break
             if not item.startswith(EVENT_PREFIX):
+                if item.startswith("翻译失败："):
+                    self.worker_error = item.strip()
                 lines.append(item)
                 continue
             try:
@@ -339,6 +348,9 @@ class TranslationWindow(tk.Toplevel):
                     lines.append(stage + "\n")
                     self.last_logged = stage
             self.detail = event.get("detail") or ""
+            if event.get("untranslated") is not None:
+                self.untranslated = max(self.untranslated, event["untranslated"])
+                lines.append(f"{self.detail}（共 {self.untranslated} 块）\n")
             self.last_feedback = time.monotonic()
             if event.get("percent") is not None:
                 if str(self.progress.cget("mode")) != "determinate":
@@ -367,13 +379,16 @@ class TranslationWindow(tk.Toplevel):
             if self.cancelled:
                 self.state_text.set("翻译已取消")
             elif code:
-                self.state_text.set("翻译失败，可查看日志并重试")
+                self.state_text.set(self.worker_error or "翻译失败，可查看日志并重试")
             else:
-                self.result_file = self.app.library.publish(self.paper["id"], self.folder, self.description)
+                note = f" · {self.untranslated} 块保留原文" if self.untranslated else ""
+                description = self.description + note + " · " + self.translation_time
+                self.result_file = self.app.library.publish(self.paper["id"], self.folder, description)
                 self.app.translated(self.paper["id"])
                 self.progress.configure(value=100)
                 self.read_btn.pack(side="right", padx=4)
-                self.state_text.set("已保存译文和双语 PDF，可在论文附件中打开")
+                self.state_text.set("已保存译文和双语 PDF" + (f"，其中 {self.untranslated} 个文本块保留了原文" if note
+                                                          else "，可在论文附件中打开"))
         except Exception as e:
             self.state_text.set(f"无法归档译文：{e}")
         finally:

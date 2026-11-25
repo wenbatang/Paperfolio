@@ -26,8 +26,11 @@ EVENT_PREFIX = "PAPERFOLIO_EVENT "
 local_http = build_opener(ProxyHandler({}))
 
 
-def report(stage, percent=None, detail=""):
-    print(EVENT_PREFIX + json.dumps({"stage": stage, "percent": percent, "detail": detail}), flush=True)
+def report(stage, percent=None, detail="", *, untranslated=None):
+    event = {"stage": stage, "percent": percent, "detail": detail}
+    if untranslated is not None:
+        event["untranslated"] = untranslated
+    print(EVENT_PREFIX + json.dumps(event), flush=True)
 
 
 def page_numbers(spec, count):
@@ -93,10 +96,18 @@ def installed_models(digests=None):
     return names
 
 
-def resolve_model(preferred, names):
-    if preferred and preferred not in names:
+def resolve_model(preferred, names, *, fallback=False):
+    if not names:
+        raise ValueError("本机 Ollama 尚无可生成文本的模型")
+    if preferred in names:
+        return preferred
+    if preferred and not fallback:
         raise ValueError("本机未安装所选模型。可用模型：" + "、".join(names))
-    return preferred or ("qwen3.5:9b" if "qwen3.5:9b" in names else names[0])
+    return names[0]
+
+
+class IncompleteGeneration(ValueError):
+    """The model finished without a usable complete answer."""
 
 
 def generate(model, messages, on_update, *, response_format=None, max_tokens=3072):
@@ -136,8 +147,10 @@ def generate(model, messages, on_update, *, response_format=None, max_tokens=307
                     raise TimeoutError("本段生成超过 10 分钟")
                 if packet.get("done"):
                     result = "".join(parts).strip()
-                    if packet.get("done_reason") == "length" or not result:
-                        raise ValueError("模型返回空译文或达到了生成上限")
+                    if packet.get("done_reason") == "length":
+                        raise IncompleteGeneration(f"达到本次生成上限（{max_tokens} tokens）")
+                    if not result:
+                        raise IncompleteGeneration("模型返回空内容")
                     return result
     except HTTPError as exc:
         raise ValueError(f"Ollama {exc.code}：{exc.read().decode(errors='replace')[:400]}") from exc
